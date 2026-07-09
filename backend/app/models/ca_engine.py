@@ -47,6 +47,7 @@ def simulate_spread(
     hours_per_step: int = 3,
     cell_size_m: float = 100.0,
     seed: int = 7,
+    calibration: float = 1.0,
 ):
     """Run the CA and return snapshots + per-timestep burned area.
 
@@ -115,7 +116,9 @@ def simulate_spread(
                     run = dist * cell_size_m
                     slope_factor = 1.0 + np.clip(rise / run, -0.6, 1.2)
 
-                    p = BASE_IGNITION_P * fuel * wind_factor * slope_factor * dryness
+                    # `calibration` is an ML-learned multiplier layered on top of
+                    # the physical factors (1.0 = no adjustment).
+                    p = BASE_IGNITION_P * fuel * wind_factor * slope_factor * dryness * calibration
                     p = float(np.clip(p, 0.0, 0.98))
 
                     if rng.random() < p:

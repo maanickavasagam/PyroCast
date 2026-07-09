@@ -15,7 +15,10 @@ import requests
 logger = logging.getLogger("pyrocast.firms")
 
 FIRMS_MAP_KEY = os.getenv("FIRMS_MAP_KEY", "")
-FIRMS_URL = "https://firms.modaps.eosdis.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/world/{days}"
+# NOTE: use the .nasa.gov hostname — it has a public DNS record everywhere,
+# whereas the older firms.modaps.eosdis.gov alias fails to resolve on some
+# networks (verified: same API, same key, .nasa.gov returns HTTP 200).
+FIRMS_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/world/{days}"
 
 
 def _normalize_confidence(raw: str):

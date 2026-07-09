@@ -45,6 +45,10 @@ from app.models.fire_metrics import (  # noqa: E402
     calculate_rate_of_spread,
     calculate_threat_index,
 )
+from app.models.calibration_apply import (  # noqa: E402
+    get_calibration_multiplier,
+    get_model_confidence,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("pyrocast.main")
@@ -66,6 +70,22 @@ CELL_SIZE_M = 100.0
 TIMESTEPS = 4
 HOURS_PER_STEP = 3
 M_PER_DEG_LAT = 111_320.0
+
+
+def _calibration_region(lat: float, lon: float) -> str:
+    """Crude lat/lon → training-region mapping for the calibration model.
+    Unknown areas fall back to 'california' (the model's default encoding)."""
+    if 32 <= lat <= 42 and -125 <= lon <= -114:
+        return "california"
+    if -39 <= lat <= -28 and 144 <= lon <= 154:
+        return "southeast_aus"
+    if 35 <= lat <= 45 and -5 <= lon <= 30:
+        return "mediterranean"
+    if -15 <= lat <= 5 and -70 <= lon <= -44:
+        return "amazon"
+    if 50 <= lat <= 70 and 80 <= lon <= 140:
+        return "siberia"
+    return "california"
 
 
 class SimulateRequest(BaseModel):
@@ -149,7 +169,16 @@ def simulate(req: SimulateRequest):
     dominant = FUEL_TYPE_TO_VEG.get(req.fuel_type.strip().lower())
     veg_grid, fuel_grid = generate_vegetation_grid(RESOLUTION, RESOLUTION, dominant=dominant)
 
-    # 4. Run the CA spread from the grid center.
+    # 4. Run the CA spread from the grid center, scaled by the ML calibration
+    #    multiplier (1.0 if the model is unavailable — never blocks the sim).
+    calibration = get_calibration_multiplier(
+        wind_speed=req.wind_speed,
+        humidity=humidity,
+        fuel_type=req.fuel_type.strip().lower(),
+        region=_calibration_region(req.lat, req.lon),
+        lat=req.lat,
+        lon=req.lon,
+    )
     ignition = (RESOLUTION // 2, RESOLUTION // 2)
     result = simulate_spread(
         elevation_grid=elevation_grid,
@@ -162,6 +191,7 @@ def simulate(req: SimulateRequest):
         timesteps=TIMESTEPS,
         hours_per_step=HOURS_PER_STEP,
         cell_size_m=CELL_SIZE_M,
+        calibration=calibration,
     )
 
     # 5. Metrics. Representative fuel load = dominant type's multiplier, or the
@@ -201,4 +231,7 @@ def simulate(req: SimulateRequest):
         "flame_length_ft": flame_length_ft,
         "heatmap_frames": heatmap_frames,
         "data_source": data_source,
+        # Additive fields — existing consumers are unaffected.
+        "model_confidence": get_model_confidence(),
+        "calibration_multiplier": round(calibration, 4),
     }

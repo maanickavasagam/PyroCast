@@ -58,21 +58,19 @@ export function FeedTag({ source }: { source: FeedSource }) {
 }
 
 /**
- * Explicit notice shown whenever the primary live feed (FIRMS) is NOT the source
+ * Compact notice shown whenever the primary live feed (FIRMS) is NOT the source
  * — so an EONET fallback or synthetic dataset is never mistaken for live data.
+ * Kept to a single small pill so it doesn't dominate the map.
  */
 export function LiveFeedNotice({ source }: { source: FeedSource }) {
   if (source === 'firms') return null;
-  const detail =
-    source === 'eonet'
-      ? 'Showing NASA EONET fallback (curated events), not the primary FIRMS feed.'
-      : 'Showing synthetic data. No live feed is currently reachable.';
+  const detail = source === 'eonet' ? 'EONET fallback active' : 'synthetic data';
   return (
-    <div className="flex items-start gap-2 rounded-lg border border-ember/25 bg-ember/10 px-3 py-2">
-      <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ember" />
-      <div className="text-[11px] leading-relaxed text-ember/90">
-        <span className="font-semibold">Primary live feed unavailable.</span> {detail}
-      </div>
+    <div className="inline-flex items-center gap-1.5 rounded-full border border-ember/25 bg-base-900/85 px-2.5 py-1 backdrop-blur-xl">
+      <TriangleAlert className="h-3 w-3 shrink-0 text-ember" />
+      <span className="whitespace-nowrap text-[10px] font-medium text-ember/90">
+        FIRMS unavailable — {detail}
+      </span>
     </div>
   );
 }

@@ -9,7 +9,7 @@ import { deriveImpact } from './spread';
 // live here so the rest of the app depends on clean typed functions, not URLs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_BASE = (import.meta.env.VITE_API_BASE ?? 'http://localhost:8000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE ?? 'http://localhost:8080').replace(/\/$/, '');
 
 /** Backend-reported provenance for the fire feed. */
 export type BackendFireSource = 'firms' | 'eonet' | 'none';

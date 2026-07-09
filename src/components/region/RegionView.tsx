@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import type { FuelType, SpreadStats, Terrain, Weather, WatchLocation } from '../../types';
+import type { FuelType, SpreadStats, Weather, WatchLocation } from '../../types';
 import { fetchWeatherFromBackend, fetchSimulation } from '../../lib/api';
 import { syntheticWeather } from '../../lib/weather';
 import { fetchTerrain } from '../../lib/elevation';
@@ -37,7 +37,6 @@ export function RegionView({ location, onBack }: Props) {
 
   // Live inputs.
   const [live, setLive] = useState<Weather | null>(null);
-  const [terrain, setTerrain] = useState<Terrain | null>(null); // for the offline fallback model
   const [weatherLoading, setWeatherLoading] = useState(true);
 
   // Simulation output + provenance.
@@ -48,27 +47,27 @@ export function RegionView({ location, onBack }: Props) {
   // Timeline scrubber.
   const [step, setStep] = useState(6);
 
-  // Load live weather (backend → synthetic fallback) + terrain when the
-  // selected location changes.
+  // Load live weather (backend → synthetic fallback) when the selected location
+  // changes. Terrain is NOT fetched here — it's only needed for the in-browser
+  // fallback model and is fetched lazily if /api/simulate fails.
   useEffect(() => {
     let cancelled = false;
     setWeatherLoading(true);
     setSpread(null);
     setFuel(location.fuel);
 
-    const loadWeather = fetchWeatherFromBackend(location.lat, location.lon).catch((err) => {
-      console.warn('[weather] backend unavailable — using synthetic weather:', err);
-      return syntheticWeather(location.lat, location.lon);
-    });
-
-    Promise.all([loadWeather, fetchTerrain(location.lat, location.lon)]).then(([w, t]) => {
-      if (cancelled) return;
-      setLive(w);
-      setWindSpeed(w.windSpeed);
-      setWindDirection(w.windDirection);
-      setTerrain(t.terrain);
-      setWeatherLoading(false);
-    });
+    fetchWeatherFromBackend(location.lat, location.lon)
+      .catch((err) => {
+        console.warn('[weather] backend unavailable — using synthetic weather:', err);
+        return syntheticWeather(location.lat, location.lon);
+      })
+      .then((w) => {
+        if (cancelled) return;
+        setLive(w);
+        setWindSpeed(w.windSpeed);
+        setWindDirection(w.windDirection);
+        setWeatherLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -81,7 +80,9 @@ export function RegionView({ location, onBack }: Props) {
   const dFuel = useDebounce(fuel, 180);
 
   // Run the simulation on the backend whenever the (debounced) scenario changes.
-  // Falls back to the in-browser model if the backend is unreachable.
+  // Falls back to the in-browser model if the backend is unreachable, fetching
+  // terrain on-demand only at that point (lazy — avoids the wasteful
+  // browser→Open-Elevation call when the backend is healthy).
   useEffect(() => {
     if (!live) return;
     let cancelled = false;
@@ -104,10 +105,15 @@ export function RegionView({ location, onBack }: Props) {
         setSpread({ points: res.points, statsByStep: res.statsByStep });
         setDataSource(res.dataSource);
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (cancelled || controller.signal.aborted) return;
         console.warn('[simulate] backend unavailable — using in-browser model:', err);
-        if (terrain) {
+
+        // Lazy terrain fetch: only hit Open-Elevation when we actually need the
+        // local fallback model (i.e. the backend simulate call just failed).
+        try {
+          const { terrain } = await fetchTerrain(location.lat, location.lon);
+          if (cancelled) return;
           const local = computeSpread({
             lat: location.lat,
             lng: location.lon,
@@ -117,6 +123,8 @@ export function RegionView({ location, onBack }: Props) {
             region: location.region,
           });
           setSpread({ points: local.points, statsByStep: local.statsByStep });
+        } catch (terrainErr) {
+          console.warn('[terrain] failed during fallback — no spread data available:', terrainErr);
         }
         setDataSource('simulated');
       })
@@ -129,7 +137,7 @@ export function RegionView({ location, onBack }: Props) {
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dWind, dDir, dFuel, live, terrain, location.id]);
+  }, [dWind, dDir, dFuel, live, location.id]);
 
   const stats = spread ? spread.statsByStep[step === 0 ? 3 : step] ?? null : null;
   const isSimulated = dataSource === 'simulated';

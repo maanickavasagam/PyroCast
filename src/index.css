@@ -79,59 +79,12 @@
   }
 }
 
-/* ── Fire / risk map markers (GPU-friendly transform-only animation) ──────── */
-.pyro-marker {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  will-change: transform;
-}
-.pyro-marker .core {
-  position: absolute;
-  inset: 4px;
-  border-radius: 9999px;
-  background: #ff6b35;
-  box-shadow: 0 0 8px 1px rgba(255, 107, 53, 0.9);
-}
-.pyro-marker .ring {
-  position: absolute;
-  inset: 0;
-  border-radius: 9999px;
-  background: rgba(255, 107, 53, 0.55);
-  transform: scale(0.6);
-  animation: pyro-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-.pyro-marker .ring.delay {
-  animation-delay: 1.2s;
-}
-.pyro-marker.risk {
-  width: 12px;
-  height: 12px;
-}
-.pyro-marker.risk .core {
-  inset: 3px;
-  background: #ffb340;
-  box-shadow: 0 0 6px 1px rgba(255, 179, 64, 0.7);
-}
-.pyro-marker.risk .ring {
-  display: none;
-}
-.pyro-marker.active-sel .core {
-  box-shadow:
-    0 0 0 2px rgba(255, 255, 255, 0.85),
-    0 0 10px 2px rgba(255, 107, 53, 0.9);
-}
-@keyframes pyro-pulse {
-  0% {
-    transform: scale(0.6);
-    opacity: 0.7;
-  }
-  80%,
-  100% {
-    transform: scale(2.6);
-    opacity: 0;
-  }
+/* Watch-location markers are GPU map layers (see WorldMap.tsx) — no DOM
+   marker CSS needed. This guarantees they stay pixel-locked to the basemap. */
+
+/* Region View: zoom control moves to top-right, below the overlay pills */
+.region-map .maplibregl-ctrl-top-right {
+  top: 60px;
 }
 
 /* MapLibre canvas should never show a focus outline */

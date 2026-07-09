@@ -46,7 +46,9 @@ export function RegionMap({ location, points, step, windDirection, resizeSignal 
       attributionControl: { compact: true },
       dragRotate: false,
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+    // Top-right (offset below the overlay pills via .region-map CSS) so the
+    // zoom buttons never collide with the timeline scrubber at the bottom.
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     mapRef.current = map;
 
     map.on('load', () => {
@@ -160,7 +162,7 @@ export function RegionMap({ location, points, step, windDirection, resizeSignal 
   const travelBearing = (windDirection + 180) % 360;
 
   return (
-    <div className="absolute inset-0">
+    <div className="region-map absolute inset-0">
       <div ref={containerRef} className="absolute inset-0" />
       <WindArrowOverlay bearing={travelBearing} />
     </div>

@@ -59,9 +59,9 @@ export function WorldView({ fires, locations, loading, feedSource, onSelect }: P
           </Badge>
         </div>
 
-        {/* Explicit "not the primary live feed" banner when applicable. */}
+        {/* Compact "not the primary live feed" pill when applicable. */}
         {!loading && !isLive && (
-          <div className="pointer-events-auto w-[300px] max-w-full">
+          <div className="pointer-events-auto">
             <LiveFeedNotice source={feedSource} />
           </div>
         )}
@@ -72,9 +72,18 @@ export function WorldView({ fires, locations, loading, feedSource, onSelect }: P
         style={{ marginLeft: collapsed ? 60 : 352, transition: 'margin-left 200ms ease-out' }}
       >
         <div className="mb-0.5 font-semibold uppercase tracking-wide text-slate-500">Legend</div>
-        <LegendRow color="#ff6b35" label="Active fire front" pulse />
+        <LegendRow color="#ff4432" label="Active fire front" pulse />
         <LegendRow color="#ffb340" label="High-risk zone (no fire yet)" />
-        <LegendRow color="#ffd18a" label="FIRMS thermal detection" />
+        <LegendRow
+          color="#ffe9a8"
+          label={
+            feedSource === 'firms'
+              ? 'FIRMS thermal detection'
+              : feedSource === 'eonet'
+                ? 'EONET wildfire event'
+                : 'Simulated detection'
+          }
+        />
       </div>
     </div>
   );
