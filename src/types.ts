@@ -83,3 +83,13 @@ export interface DataSourceState {
   weather: boolean;
   terrain: boolean;
 }
+
+/**
+ * Provenance of the active-fire feed:
+ *  - 'firms'     primary live feed (NASA FIRMS thermal detections)
+ *  - 'eonet'     live but secondary fallback (NASA EONET curated events) —
+ *                shown only when the primary FIRMS feed is unreachable
+ *  - 'simulated' synthetic data — no live feed available at all
+ * Only 'firms' is treated as the primary live feed in the UI.
+ */
+export type FeedSource = 'firms' | 'eonet' | 'simulated';

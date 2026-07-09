@@ -20,6 +20,8 @@ interface Props {
   stats: SpreadStats | null;
   step: number;
   loading: boolean;
+  /** Subtle "recomputing" pulse while a debounced simulation is in flight. */
+  updating?: boolean;
 }
 
 const THREAT_STYLES: Record<
@@ -33,7 +35,7 @@ const THREAT_STYLES: Record<
 };
 
 /** Right panel: threat gauge + impact stat cards. Collapses to a slim rail. */
-export function RightStats({ collapsed, onToggle, stats, step, loading }: Props) {
+export function RightStats({ collapsed, onToggle, stats, step, loading, updating }: Props) {
   const threat = stats?.threatLabel ?? 'Moderate';
   const ts = THREAT_STYLES[threat];
   const isNow = step === 0;
@@ -71,6 +73,13 @@ export function RightStats({ collapsed, onToggle, stats, step, loading }: Props)
               <span className="rounded-full bg-base-700 px-2 py-0.5 font-mono text-[10px] text-slate-400">
                 {isNow ? 'Now' : `+${step}h`}
               </span>
+              {updating && !loading && (
+                <span
+                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-fire-400"
+                  title="Recomputing…"
+                  aria-label="Recomputing"
+                />
+              )}
             </div>
             <IconButton onClick={onToggle} label="Collapse stats">
               <ChevronRight className="h-4 w-4" />

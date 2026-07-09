@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Flame, TriangleAlert, MapPin, ArrowRight } from 'lucide-react';
-import type { WatchLocation } from '../../types';
-import { Badge, IconButton, SimulatedTag } from '../ui/primitives';
+import type { FeedSource, WatchLocation } from '../../types';
+import { Badge, FeedTag, IconButton } from '../ui/primitives';
 import { Brand } from '../ui/Brand';
 
 interface Props {
@@ -10,7 +10,7 @@ interface Props {
   onSelect: (loc: WatchLocation) => void;
   selectedId: string | null;
   loading: boolean;
-  simulated: boolean;
+  feedSource: FeedSource;
 }
 
 function LocationRow({
@@ -67,7 +67,7 @@ export function LocationPanel({
   onSelect,
   selectedId,
   loading,
-  simulated,
+  feedSource,
 }: Props) {
   const active = locations.filter((l) => l.status === 'active');
   const risk = locations.filter((l) => l.status === 'high-risk');
@@ -118,7 +118,7 @@ export function LocationPanel({
               <MapPin className="h-3.5 w-3.5" />
               Watch Locations
             </div>
-            {simulated && <SimulatedTag />}
+            {!loading && <FeedTag source={feedSource} />}
           </div>
 
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-4 pt-3">

@@ -1,92 +1,34 @@
-import type { FirePoint, WatchLocation } from '../types';
+import type { FeedSource, FirePoint, WatchLocation } from '../types';
+import { fetchGlobalFires } from './api';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NASA FIRMS active fire data.
+// Active-fire feed orchestration.
 //
-// Register for a free MAP_KEY at https://firms.modaps.eosdis.gov/api/map_key/
-// and drop it in below (or set VITE_FIRMS_KEY in a .env file). The `DEMO_KEY`
-// placeholder will not return live data — the code falls back to a clearly
-// labeled synthetic dataset so the UI always renders.
+// Provenance priority:
+//   1. Backend NASA FIRMS  → primary LIVE feed        (source: 'firms')
+//   2. Backend NASA EONET  → live fallback feed       (source: 'eonet')
+//      (used automatically when FIRMS is unreachable, e.g. a network that
+//       filters *.modaps.eosdis.gov)
+//   3. Synthetic dataset   → no live feed available   (source: 'simulated')
 //
-// Endpoint shape:
-//   https://firms.modaps.eosdis.gov/api/area/csv/{MAP_KEY}/VIIRS_SNPP_NRT/world/1
-// (last path segment = number of days back)
+// The UI treats ONLY 'firms' as the primary live feed; 'eonet' and 'simulated'
+// are surfaced with an explicit "primary live feed unavailable" notice so the
+// fallback is never mistaken for the live feed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const FIRMS_KEY = import.meta.env.VITE_FIRMS_KEY ?? 'DEMO_KEY';
-const FIRMS_URL = `https://firms.modaps.eosdis.gov/api/area/csv/${FIRMS_KEY}/VIIRS_SNPP_NRT/world/1`;
-
-/** Normalize FIRMS confidence (l/n/h or 0-100) to a 0-100 number. */
-function normalizeConfidence(raw: string): number {
-  const s = raw.trim().toLowerCase();
-  if (s === 'l') return 25;
-  if (s === 'n') return 60;
-  if (s === 'h') return 90;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 50;
-}
-
 /**
- * Minimal CSV parser tailored to FIRMS output (no quoted-comma fields in the
- * columns we consume), so we avoid pulling in a CSV dependency. Reads the header
- * row to locate columns by name, tolerating column-order changes between
- * FIRMS product versions.
- */
-export function parseFirmsCsv(csv: string): FirePoint[] {
-  const lines = csv.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-
-  const header = lines[0].split(',').map((h) => h.trim().toLowerCase());
-  const idx = (name: string) => header.indexOf(name);
-
-  const iLat = idx('latitude');
-  const iLon = idx('longitude');
-  const iBright = idx('bright_ti4') >= 0 ? idx('bright_ti4') : idx('brightness');
-  const iConf = idx('confidence');
-  const iDate = idx('acq_date');
-
-  if (iLat < 0 || iLon < 0) return [];
-
-  const out: FirePoint[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',');
-    const lat = Number(cols[iLat]);
-    const lon = Number(cols[iLon]);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    out.push({
-      lat,
-      lon,
-      brightness: iBright >= 0 ? Number(cols[iBright]) || 330 : 330,
-      confidence: iConf >= 0 ? normalizeConfidence(cols[iConf] ?? '') : 50,
-      acqDate: iDate >= 0 ? cols[iDate] : '',
-    });
-  }
-  return out;
-}
-
-/**
- * Fetch worldwide active fires from FIRMS. Returns { points, simulated }.
- * On any failure (missing key, CORS, rate-limit, network) it resolves to a
- * synthetic dataset clustered around the known watch locations, flagged
- * `simulated: true` so the UI can show a muted "simulated data" tag.
+ * Fetch active fires. Returns the points and the resolved feed source. Never
+ * rejects — falls back to a synthetic dataset if the backend is unreachable.
  */
 export async function fetchActiveFires(
   seeds: WatchLocation[]
-): Promise<{ points: FirePoint[]; simulated: boolean }> {
-  if (FIRMS_KEY === 'DEMO_KEY') {
-    // No real key configured — skip the network round-trip and simulate.
-    return { points: syntheticFires(seeds), simulated: true };
-  }
+): Promise<{ points: FirePoint[]; source: FeedSource }> {
   try {
-    const res = await fetch(FIRMS_URL, { headers: { Accept: 'text/csv' } });
-    if (!res.ok) throw new Error(`FIRMS HTTP ${res.status}`);
-    const csv = await res.text();
-    const points = parseFirmsCsv(csv);
-    if (points.length === 0) throw new Error('FIRMS returned no rows');
-    return { points, simulated: false };
+    const { points, source } = await fetchGlobalFires();
+    return { points, source };
   } catch (err) {
-    console.warn('[FIRMS] falling back to simulated fire data:', err);
-    return { points: syntheticFires(seeds), simulated: true };
+    console.warn('[fires] backend unavailable — using synthetic feed:', err);
+    return { points: syntheticFires(seeds), source: 'simulated' };
   }
 }
 

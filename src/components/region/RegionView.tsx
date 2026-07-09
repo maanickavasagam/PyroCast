@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import type { FuelType, Terrain, Weather, WatchLocation } from '../../types';
-import { fetchWeather } from '../../lib/weather';
+import type { FuelType, SpreadStats, Terrain, Weather, WatchLocation } from '../../types';
+import { fetchWeatherFromBackend, fetchSimulation } from '../../lib/api';
+import { syntheticWeather } from '../../lib/weather';
 import { fetchTerrain } from '../../lib/elevation';
 import { computeSpread } from '../../lib/spread';
 import { useDebounce } from '../../hooks/useDebounce';
@@ -17,6 +18,11 @@ interface Props {
   onBack: () => void;
 }
 
+type SpreadData = {
+  points: import('../../types').SpreadPoint[];
+  statsByStep: Record<number, SpreadStats>;
+};
+
 /** Region View: three-zone layout with two independently collapsible panels. */
 export function RegionView({ location, onBack }: Props) {
   // Panel collapse state.
@@ -29,57 +35,104 @@ export function RegionView({ location, onBack }: Props) {
   const [windDirection, setWindDirection] = useState(0);
   const [fuel, setFuel] = useState<FuelType>(location.fuel);
 
-  // Live data.
+  // Live inputs.
   const [live, setLive] = useState<Weather | null>(null);
-  const [terrain, setTerrain] = useState<Terrain | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [weatherSim, setWeatherSim] = useState(false);
+  const [terrain, setTerrain] = useState<Terrain | null>(null); // for the offline fallback model
+  const [weatherLoading, setWeatherLoading] = useState(true);
+
+  // Simulation output + provenance.
+  const [spread, setSpread] = useState<SpreadData | null>(null);
+  const [simLoading, setSimLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<'live' | 'simulated'>('live');
 
   // Timeline scrubber.
   const [step, setStep] = useState(6);
 
-  // Load live weather + terrain when the selected location changes.
+  // Load live weather (backend → synthetic fallback) + terrain when the
+  // selected location changes.
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    setWeatherLoading(true);
+    setSpread(null);
     setFuel(location.fuel);
-    Promise.all([
-      fetchWeather(location.lat, location.lon),
-      fetchTerrain(location.lat, location.lon),
-    ]).then(([w, t]) => {
+
+    const loadWeather = fetchWeatherFromBackend(location.lat, location.lon).catch((err) => {
+      console.warn('[weather] backend unavailable — using synthetic weather:', err);
+      return syntheticWeather(location.lat, location.lon);
+    });
+
+    Promise.all([loadWeather, fetchTerrain(location.lat, location.lon)]).then(([w, t]) => {
       if (cancelled) return;
-      setLive(w.weather);
-      setWeatherSim(w.simulated);
-      setWindSpeed(w.weather.windSpeed);
-      setWindDirection(w.weather.windDirection);
+      setLive(w);
+      setWindSpeed(w.windSpeed);
+      setWindDirection(w.windDirection);
       setTerrain(t.terrain);
-      setLoading(false);
+      setWeatherLoading(false);
     });
     return () => {
       cancelled = true;
     };
   }, [location.id, location.lat, location.lon, location.fuel]);
 
-  // Debounce the scenario inputs so dragging a slider never blocks on recompute.
-  const dWind = useDebounce(windSpeed, 170);
-  const dDir = useDebounce(windDirection, 170);
-  const dFuel = useDebounce(fuel, 170);
+  // Debounce the scenario inputs so dragging a slider never fires a request per
+  // frame — only once the value settles.
+  const dWind = useDebounce(windSpeed, 180);
+  const dDir = useDebounce(windDirection, 180);
+  const dFuel = useDebounce(fuel, 180);
 
-  // Recompute the spread projection only when debounced inputs settle.
-  const spread = useMemo(() => {
-    if (!live || !terrain) return null;
-    return computeSpread({
-      lat: location.lat,
-      lng: location.lon,
-      weather: { ...live, windSpeed: dWind, windDirection: dDir },
-      terrain,
-      fuel: dFuel,
-      region: location.region,
-    });
+  // Run the simulation on the backend whenever the (debounced) scenario changes.
+  // Falls back to the in-browser model if the backend is unreachable.
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setSimLoading(true);
+
+    fetchSimulation(
+      {
+        lat: location.lat,
+        lon: location.lon,
+        windDirection: dDir,
+        windSpeed: dWind,
+        fuel: dFuel,
+        region: location.region,
+      },
+      controller.signal
+    )
+      .then((res) => {
+        if (cancelled) return;
+        setSpread({ points: res.points, statsByStep: res.statsByStep });
+        setDataSource(res.dataSource);
+      })
+      .catch((err) => {
+        if (cancelled || controller.signal.aborted) return;
+        console.warn('[simulate] backend unavailable — using in-browser model:', err);
+        if (terrain) {
+          const local = computeSpread({
+            lat: location.lat,
+            lng: location.lon,
+            weather: { ...live, windSpeed: dWind, windDirection: dDir },
+            terrain,
+            fuel: dFuel,
+            region: location.region,
+          });
+          setSpread({ points: local.points, statsByStep: local.statsByStep });
+        }
+        setDataSource('simulated');
+      })
+      .finally(() => {
+        if (!cancelled) setSimLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dWind, dDir, dFuel, terrain, live, location.id]);
+  }, [dWind, dDir, dFuel, live, terrain, location.id]);
 
   const stats = spread ? spread.statsByStep[step === 0 ? 3 : step] ?? null : null;
+  const isSimulated = dataSource === 'simulated';
 
   // After a panel width transition ends, tell the map to resize.
   const toggleLeft = () => {
@@ -119,8 +172,8 @@ export function RegionView({ location, onBack }: Props) {
         onFuel={setFuel}
         onReset={resetToObserved}
         live={live}
-        loading={loading}
-        simulated={weatherSim}
+        loading={weatherLoading}
+        simulated={isSimulated}
       />
 
       {/* CENTER — map + scrubber */}
@@ -150,7 +203,8 @@ export function RegionView({ location, onBack }: Props) {
             ) : (
               <Badge tone="amber">High-risk</Badge>
             )}
-            {weatherSim && <SimulatedTag />}
+            {!weatherLoading &&
+              (isSimulated ? <SimulatedTag /> : <Badge tone="teal">Live data</Badge>)}
           </div>
         </div>
 
@@ -163,7 +217,8 @@ export function RegionView({ location, onBack }: Props) {
         onToggle={toggleRight}
         stats={stats}
         step={step}
-        loading={loading}
+        loading={!spread}
+        updating={simLoading}
       />
     </div>
   );

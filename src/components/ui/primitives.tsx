@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { Database } from 'lucide-react';
+import { Database, Radio, Satellite, TriangleAlert } from 'lucide-react';
+import type { FeedSource } from '../../types';
 
 /** Small muted tag shown when a data source is using synthetic fallback. */
 export function SimulatedTag({ label = 'simulated data' }: { label?: string }) {
@@ -8,6 +9,71 @@ export function SimulatedTag({ label = 'simulated data' }: { label?: string }) {
       <Database className="h-2.5 w-2.5" />
       {label}
     </span>
+  );
+}
+
+/** Presentation metadata for each fire-feed provenance. */
+export const FEED_META: Record<
+  FeedSource,
+  { short: string; full: string; live: boolean; unit: string }
+> = {
+  firms: { short: 'Live · FIRMS', full: 'NASA FIRMS live feed', live: true, unit: 'live detections' },
+  eonet: {
+    short: 'Fallback · EONET',
+    full: 'NASA EONET fallback feed',
+    live: false,
+    unit: 'wildfire events',
+  },
+  simulated: {
+    short: 'Simulated',
+    full: 'Synthetic dataset',
+    live: false,
+    unit: 'simulated detections',
+  },
+};
+
+/** Small provenance tag for the fire feed (used in the panel header). */
+export function FeedTag({ source }: { source: FeedSource }) {
+  const meta = FEED_META[source];
+  if (source === 'firms') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-teal-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-400 ring-1 ring-inset ring-teal-500/30">
+        <Satellite className="h-2.5 w-2.5" />
+        {meta.short}
+      </span>
+    );
+  }
+  const tone =
+    source === 'eonet'
+      ? 'bg-ember/15 text-ember ring-ember/30'
+      : 'bg-base-700/70 text-slate-400 ring-white/5';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${tone}`}
+    >
+      {source === 'eonet' ? <Radio className="h-2.5 w-2.5" /> : <Database className="h-2.5 w-2.5" />}
+      {meta.short}
+    </span>
+  );
+}
+
+/**
+ * Explicit notice shown whenever the primary live feed (FIRMS) is NOT the source
+ * — so an EONET fallback or synthetic dataset is never mistaken for live data.
+ */
+export function LiveFeedNotice({ source }: { source: FeedSource }) {
+  if (source === 'firms') return null;
+  const detail =
+    source === 'eonet'
+      ? 'Showing NASA EONET fallback (curated events), not the primary FIRMS feed.'
+      : 'Showing synthetic data. No live feed is currently reachable.';
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-ember/25 bg-ember/10 px-3 py-2">
+      <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ember" />
+      <div className="text-[11px] leading-relaxed text-ember/90">
+        <span className="font-semibold">Primary live feed unavailable.</span> {detail}
+      </div>
+    </div>
   );
 }
 

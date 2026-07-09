@@ -139,6 +139,22 @@ function estimateRoadsAtRisk(
 }
 
 /**
+ * Derive impact estimates (people in path, roads at risk) from a burn area.
+ * Used when a backend supplies burn area but not impact, so the impact cards
+ * stay populated with the same approximations the in-browser model uses.
+ */
+export function deriveImpact(
+  burnAreaAcres: number,
+  lat: number,
+  lng: number,
+  region: string
+): { peopleInPath: number; roadsAtRisk: number } {
+  const density = densityForRegion(region);
+  const peopleInPath = (burnAreaAcres / ACRES_PER_SQMI) * density;
+  return { peopleInPath, roadsAtRisk: estimateRoadsAtRisk(lat, lng, burnAreaAcres) };
+}
+
+/**
  * Compute the full spread projection (all three horizons) plus per-step stats.
  * Called on every control change, so it must stay cheap — a single grid sweep.
  */

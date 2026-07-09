@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { FirePoint, WatchLocation } from './types';
+import type { FeedSource, FirePoint, WatchLocation } from './types';
 import { fetchActiveFires } from './lib/firms';
 import { WATCH_LOCATIONS } from './lib/regions';
 import { WorldView } from './components/world/WorldView';
@@ -7,17 +7,17 @@ import { RegionView } from './components/region/RegionView';
 
 export default function App() {
   const [fires, setFires] = useState<FirePoint[]>([]);
-  const [simulated, setSimulated] = useState(false);
+  const [feedSource, setFeedSource] = useState<FeedSource>('simulated');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<WatchLocation | null>(null);
 
   // Load active-fire detections once, up front.
   useEffect(() => {
     let cancelled = false;
-    fetchActiveFires(WATCH_LOCATIONS).then(({ points, simulated }) => {
+    fetchActiveFires(WATCH_LOCATIONS).then(({ points, source }) => {
       if (cancelled) return;
       setFires(points);
-      setSimulated(simulated);
+      setFeedSource(source);
       setLoading(false);
     });
     return () => {
@@ -38,7 +38,7 @@ export default function App() {
           fires={fires}
           locations={WATCH_LOCATIONS}
           loading={loading}
-          simulated={simulated}
+          feedSource={feedSource}
           onSelect={setSelected}
         />
       )}
