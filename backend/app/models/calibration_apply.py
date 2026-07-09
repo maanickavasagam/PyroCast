@@ -151,12 +151,44 @@ def get_calibration_multiplier(
 def get_model_confidence() -> Optional[float]:
     """Return the trained model's cross-validated R² (or None if unavailable).
 
-    Exposed so /api/simulate can report calibration confidence to the UI."""
+    This is a GLOBAL confidence score — how well the calibration model fits
+    its training data overall. It does not vary per-request. See
+    `get_prediction_uncertainty` for a per-prediction band."""
     artifact = _load_model()
     if artifact is None:
         return None
     r2 = artifact.get("r2")
     return round(float(r2), 4) if r2 is not None else None
+
+
+def get_prediction_uncertainty(multiplier: float) -> Optional[dict]:
+    """Return a per-prediction uncertainty band for a given calibration
+    multiplier, derived from the model's cross-validated MAE.
+
+    This is a simple, honest proxy for prediction-level confidence: the
+    trained model has a cross-validated mean absolute error (MAE) on its
+    multiplier target. We propagate that same absolute error onto THIS
+    prediction to get a [low, high] band — e.g. multiplier=0.9, mae=0.03
+    → band=[0.87, 0.93]. It is not a rigorous per-sample uncertainty
+    (the model doesn't natively support that), but it is grounded in a real,
+    reported error metric rather than being invented — it answers "how much
+    could this specific number be off by, based on the model's known error."
+
+    Returns None if the model/MAE is unavailable (caller should omit the
+    field rather than show a fabricated number).
+    """
+    artifact = _load_model()
+    if artifact is None:
+        return None
+    mae = artifact.get("mae")
+    if mae is None:
+        return None
+    mae = float(mae)
+    return {
+        "multiplier_low": round(max(0.1, multiplier - mae), 4),
+        "multiplier_high": round(multiplier + mae, 4),
+        "mae": round(mae, 4),
+    }
 
 
 # ── Quick self-test ──────────────────────────────────────────────────────────

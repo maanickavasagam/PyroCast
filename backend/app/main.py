@@ -48,7 +48,11 @@ from app.models.fire_metrics import (  # noqa: E402
 from app.models.calibration_apply import (  # noqa: E402
     get_calibration_multiplier,
     get_model_confidence,
+    get_prediction_uncertainty,
 )
+from app.services.event_log import log_simulation_event  # noqa: E402
+from app.services.routing import get_evacuation_route  # noqa: E402
+from app.services.summarizer import summarize_incident  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("pyrocast.main")
@@ -95,6 +99,12 @@ class SimulateRequest(BaseModel):
     wind_speed: float
     fuel_type: str = "chaparral"
     humidity: float | None = None
+
+
+class SummarizeRequest(BaseModel):
+    """Body is the JSON already returned by /api/simulate, plus a display name."""
+    simulation: dict
+    location_name: str = "the affected area"
 
 
 @app.get("/")
@@ -194,6 +204,43 @@ def simulate(req: SimulateRequest):
         calibration=calibration,
     )
 
+    # 4b. Per-prediction confidence band: re-run the SAME CA engine (same
+    # elevation/fuel grids, same random seed) at the calibration model's
+    # MAE-bounded low/high multipliers. This gives a real computed burn-area
+    # range grounded in the model's reported error, rather than a guessed or
+    # linearly-scaled number.
+    uncertainty = get_prediction_uncertainty(calibration)
+    burn_area_low = burn_area_high = None
+    if uncertainty is not None:
+        result_low = simulate_spread(
+            elevation_grid=elevation_grid,
+            vegetation_grid=veg_grid,
+            fuel_grid=fuel_grid,
+            ignition_point=ignition,
+            wind_speed=req.wind_speed,
+            wind_direction=req.wind_direction,
+            humidity=humidity,
+            timesteps=TIMESTEPS,
+            hours_per_step=HOURS_PER_STEP,
+            cell_size_m=CELL_SIZE_M,
+            calibration=uncertainty["multiplier_low"],
+        )
+        result_high = simulate_spread(
+            elevation_grid=elevation_grid,
+            vegetation_grid=veg_grid,
+            fuel_grid=fuel_grid,
+            ignition_point=ignition,
+            wind_speed=req.wind_speed,
+            wind_direction=req.wind_direction,
+            humidity=humidity,
+            timesteps=TIMESTEPS,
+            hours_per_step=HOURS_PER_STEP,
+            cell_size_m=CELL_SIZE_M,
+            calibration=uncertainty["multiplier_high"],
+        )
+        burn_area_low = result_low["burned_acres"]
+        burn_area_high = result_high["burned_acres"]
+
     # 5. Metrics. Representative fuel load = dominant type's multiplier, or the
     #    mean of burnable cells if the dominant is non-burnable/unknown.
     if dominant is not None and FUEL_MULTIPLIER.get(dominant, 0) > 0:
@@ -207,6 +254,9 @@ def simulate(req: SimulateRequest):
         result["burned_counts"], CELL_SIZE_M, HOURS_PER_STEP
     )
     threat_index = calculate_threat_index(req.wind_speed, humidity, fuel_load)
+
+    # 5b. Real evacuation route (OSRM), None if unreachable — never fabricated.
+    evacuation_route = get_evacuation_route(req.lat, req.lon)
 
     # 6. Convert grid snapshots to lat/lng heatmap frames.
     rows, cols = RESOLUTION, RESOLUTION
@@ -224,7 +274,7 @@ def simulate(req: SimulateRequest):
                 points.append({"lat": round(lat, 6), "lng": round(lng, 6), "intensity": intensity})
         heatmap_frames.append({"timestep": t, "points": points})
 
-    return {
+    response = {
         "threat_index": threat_index,
         "burn_area_acres": result["burned_acres"],
         "rate_of_spread_ch_per_h": rate_of_spread,
@@ -234,4 +284,45 @@ def simulate(req: SimulateRequest):
         # Additive fields — existing consumers are unaffected.
         "model_confidence": get_model_confidence(),
         "calibration_multiplier": round(calibration, 4),
+        # Per-prediction uncertainty band (None if the calibration model or its
+        # MAE is unavailable — never a fabricated placeholder).
+        "burn_area_acres_low": burn_area_low,
+        "burn_area_acres_high": burn_area_high,
+        # None if OSRM is unreachable — the frontend must handle absence, not
+        # a fabricated fallback route.
+        "evacuation_route": evacuation_route,
     }
+
+    log_simulation_event(
+        inputs={
+            "lat": req.lat,
+            "lon": req.lon,
+            "wind_direction": req.wind_direction,
+            "wind_speed": req.wind_speed,
+            "fuel_type": req.fuel_type,
+            "humidity": humidity,
+        },
+        outputs={
+            "threat_index": threat_index,
+            "burn_area_acres": result["burned_acres"],
+            "rate_of_spread_ch_per_h": rate_of_spread,
+            "flame_length_ft": flame_length_ft,
+            "data_source": data_source,
+            "model_confidence": response["model_confidence"],
+            "calibration_multiplier": response["calibration_multiplier"],
+        },
+    )
+
+    return response
+
+
+@app.post("/api/summarize")
+def summarize(req: SummarizeRequest):
+    """Generate a short AI incident brief from a completed /api/simulate result.
+
+    Kept as a separate, optional endpoint (rather than folded into /api/simulate)
+    since it depends on a third-party LLM and is slower — the frontend can call
+    it lazily after the map/stats are already showing.
+    """
+    summary = summarize_incident(req.simulation, req.location_name)
+    return {"summary": summary}

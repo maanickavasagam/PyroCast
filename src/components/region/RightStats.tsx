@@ -9,8 +9,11 @@ import {
   TriangleAlert,
   Activity,
   BarChart3,
+  Navigation,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
-import type { SpreadStats } from '../../types';
+import type { EvacuationRoute, SpreadStats } from '../../types';
 import { fmtAcres, fmtDec, fmtInt, fmtPeople } from '../../lib/format';
 import { IconButton, StatCard } from '../ui/primitives';
 
@@ -22,6 +25,15 @@ interface Props {
   loading: boolean;
   /** Subtle "recomputing" pulse while a debounced simulation is in flight. */
   updating?: boolean;
+  /** Real OSRM road-network route; undefined if unavailable (never fabricated). */
+  evacuationRoute?: EvacuationRoute;
+  /** AI (Gemini) incident brief — undefined until generated. */
+  summary?: string;
+  summaryLoading?: boolean;
+  summaryError?: string;
+  /** True once a backend simulation result exists to summarize. */
+  summaryAvailable?: boolean;
+  onGenerateSummary?: () => void;
 }
 
 const THREAT_STYLES: Record<
@@ -35,7 +47,20 @@ const THREAT_STYLES: Record<
 };
 
 /** Right panel: threat gauge + impact stat cards. Collapses to a slim rail. */
-export function RightStats({ collapsed, onToggle, stats, step, loading, updating }: Props) {
+export function RightStats({
+  collapsed,
+  onToggle,
+  stats,
+  step,
+  loading,
+  updating,
+  evacuationRoute,
+  summary,
+  summaryLoading,
+  summaryError,
+  summaryAvailable,
+  onGenerateSummary,
+}: Props) {
   const threat = stats?.threatLabel ?? 'Moderate';
   const ts = THREAT_STYLES[threat];
   const isNow = step === 0;
@@ -113,6 +138,44 @@ export function RightStats({ collapsed, onToggle, stats, step, loading, updating
               </div>
             </div>
 
+            {/* AI incident brief (Gemini) — generated on demand, never shown as
+                a placeholder; only real generated text or an explicit error. */}
+            {!loading && summaryAvailable && (
+              <div className="rounded-xl border border-violet-500/20 bg-violet-950/10 p-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Sparkles className="h-3.5 w-3.5 text-violet-400" />
+                    <span className="text-[11px] font-medium uppercase tracking-wide">
+                      AI Incident Brief
+                    </span>
+                  </div>
+                  {!summaryLoading && (
+                    <button
+                      type="button"
+                      onClick={onGenerateSummary}
+                      className="text-[11px] font-medium text-violet-400 hover:text-violet-300"
+                    >
+                      {summary ? 'Regenerate' : 'Generate'}
+                    </button>
+                  )}
+                </div>
+                {summaryLoading ? (
+                  <div className="mt-2 flex items-center gap-2 text-[12px] text-slate-500">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Generating brief… (can take up to a minute)
+                  </div>
+                ) : summaryError ? (
+                  <div className="mt-2 text-[12px] text-red-400">{summaryError}</div>
+                ) : summary ? (
+                  <p className="mt-2 text-[12px] leading-relaxed text-slate-300">{summary}</p>
+                ) : (
+                  <p className="mt-2 text-[12px] leading-relaxed text-slate-500">
+                    Generate a plain-English incident brief from the current simulation.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Warning banner (high / extreme only) */}
             {highThreat && !isNow && (
               <div className="animate-slide-up rounded-xl border border-red-500/30 bg-red-950/40 p-3">
@@ -140,6 +203,16 @@ export function RightStats({ collapsed, onToggle, stats, step, loading, updating
               tone="fire"
               loading={loading}
             />
+            {!loading && stats && !isNow && stats.burnAreaAcresLow != null && stats.burnAreaAcresHigh != null && (
+              <div className="-mt-2 px-1 text-[10px] text-slate-500">
+                Range: {fmtAcres(stats.burnAreaAcresLow)}–{fmtAcres(stats.burnAreaAcresHigh)} acres
+                {stats.modelConfidence != null && (
+                  <span className="ml-1">
+                    · model confidence {Math.round(stats.modelConfidence * 100)}%
+                  </span>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <StatCard
                 icon={<Gauge className="h-3.5 w-3.5" />}
@@ -198,6 +271,35 @@ export function RightStats({ collapsed, onToggle, stats, step, loading, updating
                 )}
               </div>
             </div>
+
+            {/* Evacuation route — real OSRM road-network route, shown only when available */}
+            {!loading && evacuationRoute && (
+              <div className="rounded-xl border border-teal-500/20 bg-teal-950/10 p-3.5">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <Navigation className="h-3.5 w-3.5 text-teal-400" />
+                  <span className="text-[11px] font-medium uppercase tracking-wide">
+                    Evacuation Route
+                  </span>
+                </div>
+                <div className="mt-1.5 text-[13px] font-semibold text-slate-200">
+                  To {evacuationRoute.destinationName}
+                </div>
+                <div className="mt-1 flex items-center gap-3 text-[12px] text-slate-400">
+                  <span>
+                    <span className="font-mono font-semibold text-teal-400">
+                      {fmtDec(evacuationRoute.distanceKm, 1)}
+                    </span>{' '}
+                    km
+                  </span>
+                  <span>
+                    <span className="font-mono font-semibold text-teal-400">
+                      {fmtInt(evacuationRoute.durationMin)}
+                    </span>{' '}
+                    min drive
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-white/5 px-4 py-2.5 text-[10px] leading-relaxed text-slate-600">

@@ -1,4 +1,4 @@
-import type { FirePoint, FuelType, SpreadPoint, SpreadStats, Weather } from '../types';
+import type { EvacuationRoute, FirePoint, FuelType, SpreadPoint, SpreadStats, Weather } from '../types';
 import { deriveImpact } from './spread';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9,7 +9,7 @@ import { deriveImpact } from './spread';
 // live here so the rest of the app depends on clean typed functions, not URLs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_BASE = (import.meta.env.VITE_API_BASE ?? 'http://localhost:8080').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE ?? 'http://localhost:8081').replace(/\/$/, '');
 
 /** Backend-reported provenance for the fire feed. */
 export type BackendFireSource = 'firms' | 'eonet' | 'none';
@@ -100,16 +100,29 @@ export async function fetchWeatherFromBackend(
 interface BackendSimResponse {
   threat_index: { label: SpreadStats['threatLabel']; score: number };
   burn_area_acres: number[];
+  burn_area_acres_low?: number[] | null;
+  burn_area_acres_high?: number[] | null;
   rate_of_spread_ch_per_h: number;
   flame_length_ft: number;
   heatmap_frames: { timestep: number; points: { lat: number; lng: number; intensity: number }[] }[];
   data_source: 'live' | 'simulated';
+  model_confidence?: number | null;
+  evacuation_route?: {
+    destination_name: string;
+    distance_km: number;
+    duration_min: number;
+    geometry: [number, number][];
+  } | null;
 }
 
 export interface SimulationResult {
   points: SpreadPoint[];
   statsByStep: Record<number, SpreadStats>;
   dataSource: 'live' | 'simulated';
+  evacuationRoute?: EvacuationRoute;
+  /** Raw backend /api/simulate response, kept so it can be forwarded to /api/summarize
+   * without re-running the simulation. */
+  raw: unknown;
 }
 
 export interface SimulateParams {
@@ -159,6 +172,8 @@ export async function fetchSimulation(
 
   const frames = [...(d.heatmap_frames ?? [])].sort((a, b) => a.timestep - b.timestep);
   const acres = d.burn_area_acres ?? [];
+  const acresLow = d.burn_area_acres_low ?? null;
+  const acresHigh = d.burn_area_acres_high ?? null;
 
   // Points: assign each cell the earliest UI horizon it appears in (dedupe by
   // coordinate) so the map's cumulative "<= step" filter works as before.
@@ -184,19 +199,65 @@ export async function fetchSimulation(
   // threat are single values; people & roads are derived client-side.
   const statsByStep: Record<number, SpreadStats> = {};
   for (const hours of UI_HORIZONS) {
-    const burn = acres[backendIndexFor(hours, acres.length)] ?? acres[acres.length - 1] ?? 0;
+    const idx = backendIndexFor(hours, acres.length);
+    const burn = acres[idx] ?? acres[acres.length - 1] ?? 0;
     const impact = deriveImpact(burn, p.lat, p.lon, p.region);
     statsByStep[hours] = {
       timestepHours: hours,
       burnAreaAcres: burn,
+      burnAreaAcresLow: acresLow?.[idx] ?? undefined,
+      burnAreaAcresHigh: acresHigh?.[idx] ?? undefined,
       rateOfSpreadChainsHr: d.rate_of_spread_ch_per_h,
       flameLengthFt: d.flame_length_ft,
       peopleInPath: impact.peopleInPath,
       roadsAtRisk: impact.roadsAtRisk,
       threatIndex: d.threat_index.score,
       threatLabel: d.threat_index.label,
+      modelConfidence: d.model_confidence ?? undefined,
     };
   }
 
-  return { points, statsByStep, dataSource: d.data_source === 'live' ? 'live' : 'simulated' };
+  const evacuationRoute: EvacuationRoute | undefined = d.evacuation_route
+    ? {
+        destinationName: d.evacuation_route.destination_name,
+        distanceKm: d.evacuation_route.distance_km,
+        durationMin: d.evacuation_route.duration_min,
+        geometry: d.evacuation_route.geometry,
+      }
+    : undefined;
+
+  return {
+    points,
+    statsByStep,
+    dataSource: d.data_source === 'live' ? 'live' : 'simulated',
+    evacuationRoute,
+    raw: d,
+  };
+}
+
+// ── AI incident summary ──────────────────────────────────────────────────────
+
+/**
+ * Ask the backend for a short AI-generated incident brief from a completed
+ * simulation. `rawSimulation` should be the `raw` field from a SimulationResult
+ * (the untouched backend /api/simulate response). Slow (external LLM call on
+ * this network can take 30-90s) — call it lazily, not on every slider tick.
+ * Throws on failure so the caller can show an inline error rather than a
+ * fabricated summary.
+ */
+export async function fetchSummary(
+  rawSimulation: unknown,
+  locationName: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/summarize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({ simulation: rawSimulation, location_name: locationName }),
+  });
+  if (!res.ok) throw new Error(`backend /api/summarize ${res.status}`);
+  const d = await res.json();
+  if (!d.summary) throw new Error('backend returned no summary');
+  return d.summary as string;
 }

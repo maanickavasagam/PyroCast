@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import maplibregl, { type Map as MLMap, type GeoJSONSource } from 'maplibre-gl';
-import type { SpreadPoint, WatchLocation } from '../../types';
+import type { EvacuationRoute, SpreadPoint, WatchLocation } from '../../types';
 import { DARK_STYLE } from '../../lib/mapStyle';
 
 interface Props {
@@ -11,6 +11,25 @@ interface Props {
   windDirection: number;
   /** External signal to call map.resize() after a panel transition. */
   resizeSignal: number;
+  /** Real OSRM road-network route to the nearest safe town; undefined if unavailable. */
+  evacuationRoute?: EvacuationRoute;
+}
+
+function routeToGeoJSON(route: EvacuationRoute | undefined): GeoJSON.FeatureCollection {
+  if (!route) return { type: 'FeatureCollection', features: [] };
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: route.geometry.map(([lat, lng]) => [lng, lat]),
+        },
+        properties: {},
+      },
+    ],
+  };
 }
 
 function pointsToGeoJSON(points: SpreadPoint[]): GeoJSON.FeatureCollection {
@@ -30,10 +49,20 @@ function pointsToGeoJSON(points: SpreadPoint[]): GeoJSON.FeatureCollection {
  * instant. A fixed grid of wind arrows overlays the map (pointer-events off) so
  * panning never triggers re-layout of the indicators.
  */
-export function RegionMap({ location, points, step, windDirection, resizeSignal }: Props) {
+export function RegionMap({
+  location,
+  points,
+  step,
+  windDirection,
+  resizeSignal,
+  evacuationRoute,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const readyRef = useRef(false);
+  // Latest route, readable synchronously from the load handler.
+  const evacRouteRef = useRef(evacuationRoute);
+  evacRouteRef.current = evacuationRoute;
 
   // Init map once.
   useEffect(() => {
@@ -76,6 +105,22 @@ export function RegionMap({ location, points, step, windDirection, resizeSignal 
             0.9, '#ffb340',
             1, '#ffe9a8',
           ],
+        },
+      });
+
+      // Real evacuation route (OSRM), drawn as a teal line so it reads
+      // distinctly from the fire heatmap. Absent entirely when no route is
+      // available — no placeholder line is ever drawn.
+      map.addSource('evac-route', { type: 'geojson', data: routeToGeoJSON(evacRouteRef.current) });
+      map.addLayer({
+        id: 'evac-route-line',
+        type: 'line',
+        source: 'evac-route',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#2dd4bf',
+          'line-width': 3.5,
+          'line-opacity': 0.85,
         },
       });
 
@@ -146,6 +191,19 @@ export function RegionMap({ location, points, step, windDirection, resizeSignal 
     if (readyRef.current) apply();
     else map.once('load', apply);
   }, [points]);
+
+  // Update the evacuation route line when it changes (new location, or the
+  // backend just returned one after loading).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource('evac-route') as GeoJSONSource | undefined;
+      if (src) src.setData(routeToGeoJSON(evacuationRoute));
+    };
+    if (readyRef.current) apply();
+    else map.once('load', apply);
+  }, [evacuationRoute]);
 
   // Scrub: flip the timestep filter (instant, GPU).
   useEffect(() => {

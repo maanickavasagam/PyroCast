@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import type { FuelType, SpreadStats, Weather, WatchLocation } from '../../types';
-import { fetchWeatherFromBackend, fetchSimulation } from '../../lib/api';
+import type { EvacuationRoute, FuelType, SpreadStats, Weather, WatchLocation } from '../../types';
+import { fetchWeatherFromBackend, fetchSimulation, fetchSummary } from '../../lib/api';
 import { syntheticWeather } from '../../lib/weather';
 import { fetchTerrain } from '../../lib/elevation';
 import { computeSpread } from '../../lib/spread';
@@ -43,6 +43,18 @@ export function RegionView({ location, onBack }: Props) {
   const [spread, setSpread] = useState<SpreadData | null>(null);
   const [simLoading, setSimLoading] = useState(true);
   const [dataSource, setDataSource] = useState<'live' | 'simulated'>('live');
+  // undefined = not yet loaded/available; only ever set from a real OSRM route.
+  const [evacuationRoute, setEvacuationRoute] = useState<EvacuationRoute | undefined>(undefined);
+  // Raw backend /api/simulate response — only present when the backend (not
+  // the local fallback model) produced the current result. Required input for
+  // the AI incident summary.
+  const [rawSimulation, setRawSimulation] = useState<unknown>(undefined);
+
+  // AI incident summary (Gemini) — generated lazily on user request, not
+  // automatically, since it's a slow external call.
+  const [summary, setSummary] = useState<string | undefined>(undefined);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | undefined>(undefined);
 
   // Timeline scrubber.
   const [step, setStep] = useState(6);
@@ -104,10 +116,19 @@ export function RegionView({ location, onBack }: Props) {
         if (cancelled) return;
         setSpread({ points: res.points, statsByStep: res.statsByStep });
         setDataSource(res.dataSource);
+        setEvacuationRoute(res.evacuationRoute);
+        setRawSimulation(res.raw);
+        // Scenario changed — any previously generated summary is now stale.
+        setSummary(undefined);
+        setSummaryError(undefined);
       })
       .catch(async (err) => {
         if (cancelled || controller.signal.aborted) return;
         console.warn('[simulate] backend unavailable — using in-browser model:', err);
+        setEvacuationRoute(undefined); // no real route available from the local fallback model
+        setRawSimulation(undefined); // no backend result to summarize
+        setSummary(undefined);
+        setSummaryError(undefined);
 
         // Lazy terrain fetch: only hit Open-Elevation when we actually need the
         // local fallback model (i.e. the backend simulate call just failed).
@@ -157,6 +178,21 @@ export function RegionView({ location, onBack }: Props) {
     resizeTimer.current = setTimeout(() => setResizeSignal((s) => s + 1), 220);
   };
 
+  // Triggered by a button in RightStats — not automatic, since Gemini can take
+  // 30-90s+ on this network and shouldn't block or re-fire on every slider tick.
+  const generateSummary = () => {
+    if (!rawSimulation || summaryLoading) return;
+    setSummaryLoading(true);
+    setSummaryError(undefined);
+    fetchSummary(rawSimulation, location.name)
+      .then(setSummary)
+      .catch((err) => {
+        console.warn('[summarize] failed:', err);
+        setSummaryError('Could not generate a summary right now.');
+      })
+      .finally(() => setSummaryLoading(false));
+  };
+
   const resetToObserved = () => {
     if (!live) return;
     setWindSpeed(live.windSpeed);
@@ -192,6 +228,7 @@ export function RegionView({ location, onBack }: Props) {
           step={step}
           windDirection={dDir}
           resizeSignal={resizeSignal}
+          evacuationRoute={evacuationRoute}
         />
 
         {/* Top bar overlay */}
@@ -227,6 +264,12 @@ export function RegionView({ location, onBack }: Props) {
         step={step}
         loading={!spread}
         updating={simLoading}
+        evacuationRoute={evacuationRoute}
+        summary={summary}
+        summaryLoading={summaryLoading}
+        summaryError={summaryError}
+        summaryAvailable={!!rawSimulation}
+        onGenerateSummary={generateSummary}
       />
     </div>
   );

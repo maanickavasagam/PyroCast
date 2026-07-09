@@ -62,6 +62,9 @@ export interface SpreadPoint {
 export interface SpreadStats {
   timestepHours: number;
   burnAreaAcres: number;
+  /** Low/high burn-area bound from the ML calibration model's MAE (undefined if unavailable — never fabricated). */
+  burnAreaAcresLow?: number;
+  burnAreaAcresHigh?: number;
   rateOfSpreadChainsHr: number;
   flameLengthFt: number;
   peopleInPath: number;
@@ -69,12 +72,25 @@ export interface SpreadStats {
   /** 0-100 composite threat index. */
   threatIndex: number;
   threatLabel: 'Low' | 'Moderate' | 'High' | 'Extreme';
+  /** Global calibration-model confidence (cross-validated R², 0-1), undefined if the model is unavailable. */
+  modelConfidence?: number;
+}
+
+/** A real, road-network evacuation route from the ignition point to the nearest known safe town (via OSRM). */
+export interface EvacuationRoute {
+  destinationName: string;
+  distanceKm: number;
+  durationMin: number;
+  /** Ordered [lat, lng] points along the actual road network. */
+  geometry: [number, number][];
 }
 
 /** Full output of a spread computation across all horizons. */
 export interface SpreadResult {
   points: SpreadPoint[];
   statsByStep: Record<number, SpreadStats>;
+  /** undefined if OSRM was unreachable — never a fabricated route. */
+  evacuationRoute?: EvacuationRoute;
 }
 
 /** Tracks which data sources are live vs. simulated, for the "simulated" tags. */
