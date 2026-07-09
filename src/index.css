@@ -1,0 +1,148 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-base-950 text-slate-200 antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    overflow: hidden;
+  }
+
+  /* Thin, dark scrollbars to match the theme */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a3340;
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a4553;
+  }
+}
+
+@layer components {
+  /* Skeleton shimmer used by loading states */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-base-700/60;
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.06),
+      transparent
+    );
+    animation: shimmer 1.6s infinite;
+  }
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  /* Range slider styling (fire accent) */
+  .range-fire {
+    @apply h-1.5 w-full cursor-pointer appearance-none rounded-full bg-base-700;
+    outline: none;
+  }
+  .range-fire::-webkit-slider-thumb {
+    @apply h-4 w-4 appearance-none rounded-full;
+    background: #ff6b35;
+    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.18);
+    transition: box-shadow 120ms ease;
+  }
+  .range-fire::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 0 5px rgba(255, 107, 53, 0.24);
+  }
+  .range-fire::-moz-range-thumb {
+    @apply h-4 w-4 rounded-full border-0;
+    background: #ff6b35;
+  }
+}
+
+/* ── Fire / risk map markers (GPU-friendly transform-only animation) ──────── */
+.pyro-marker {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  will-change: transform;
+}
+.pyro-marker .core {
+  position: absolute;
+  inset: 4px;
+  border-radius: 9999px;
+  background: #ff6b35;
+  box-shadow: 0 0 8px 1px rgba(255, 107, 53, 0.9);
+}
+.pyro-marker .ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: rgba(255, 107, 53, 0.55);
+  transform: scale(0.6);
+  animation: pyro-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.pyro-marker .ring.delay {
+  animation-delay: 1.2s;
+}
+.pyro-marker.risk {
+  width: 12px;
+  height: 12px;
+}
+.pyro-marker.risk .core {
+  inset: 3px;
+  background: #ffb340;
+  box-shadow: 0 0 6px 1px rgba(255, 179, 64, 0.7);
+}
+.pyro-marker.risk .ring {
+  display: none;
+}
+.pyro-marker.active-sel .core {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.85),
+    0 0 10px 2px rgba(255, 107, 53, 0.9);
+}
+@keyframes pyro-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  80%,
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+/* MapLibre canvas should never show a focus outline */
+.maplibregl-canvas:focus {
+  outline: none;
+}
+
+/* MapLibre attribution — subtle in dark theme */
+.maplibregl-ctrl-attrib {
+  background: rgba(8, 9, 12, 0.6) !important;
+}
+.maplibregl-ctrl-attrib a {
+  color: #64748b !important;
+}
