@@ -60,6 +60,8 @@ def get_calibration_multiplier(
     lat: Optional[float] = None,
     lon: Optional[float] = None,
     month: Optional[int] = None,
+    elevation: Optional[float] = None,
+    slope_proxy: Optional[float] = None,
 ) -> float:
     """Return a spread-rate multiplier (float, typically 0.5 – 2.5).
 
@@ -78,6 +80,13 @@ def get_calibration_multiplier(
         Coordinates — if omitted, region center is used.
     month : int, optional
         Month (1-12) — if omitted, current month is used.
+    elevation : float, optional
+        Real elevation in meters at the ignition point (e.g. from the CA
+        engine's already-fetched elevation grid). Omit to use a neutral
+        default — only models trained with the elevation feature use this.
+    slope_proxy : float, optional
+        0-1 terrain-ruggedness proxy (see train_calibration.py's
+        build_features for the exact definition). Omit for a neutral default.
 
     Returns
     -------
@@ -117,7 +126,8 @@ def get_calibration_multiplier(
 
     # Assemble feature vector in the same order as training.
     # [lat, lon, brightness, confidence, month_sin, month_cos,
-    #  fuel_encoded, fuel_load, region_encoded, wind_proxy, humidity_proxy]
+    #  fuel_encoded, fuel_load, region_encoded, wind_proxy, humidity_proxy,
+    #  (elevation, slope_proxy — only for models trained with them)]
     #
     # We don't have brightness/confidence at prediction time — use the median
     # training values (330 / 60) as neutral stand-ins. The model's primary
@@ -136,6 +146,14 @@ def get_calibration_multiplier(
         wind_speed,
         humidity,
     ]
+
+    # Older saved models were trained with 11 features (no elevation/slope);
+    # only append these if the loaded model actually expects them, so a model
+    # trained before this feature existed doesn't get a mismatched vector.
+    feature_names = artifact.get("feature_names", [])
+    if len(feature_names) >= 13:
+        features.append(elevation if elevation is not None else 500.0)
+        features.append(slope_proxy if slope_proxy is not None else 0.0)
 
     try:
         import numpy as np
@@ -196,12 +214,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     test_cases = [
-        {"wind_speed": 5.0,  "humidity": 80.0, "fuel_type": "grassland",  "region": "california"},
-        {"wind_speed": 12.0, "humidity": 30.0, "fuel_type": "chaparral",  "region": "california"},
-        {"wind_speed": 25.0, "humidity": 15.0, "fuel_type": "chaparral",  "region": "mediterranean"},
-        {"wind_speed": 8.0,  "humidity": 50.0, "fuel_type": "forest",     "region": "amazon"},
-        {"wind_speed": 30.0, "humidity": 10.0, "fuel_type": "forest",     "region": "siberia"},
-        {"wind_speed": 20.0, "humidity": 20.0, "fuel_type": "grassland",  "region": "southeast_aus"},
+        {"wind_speed": 5.0,  "humidity": 80.0, "fuel_type": "grassland",  "region": "california", "elevation": 200.0, "slope_proxy": 0.05},
+        {"wind_speed": 12.0, "humidity": 30.0, "fuel_type": "chaparral",  "region": "california", "elevation": 900.0, "slope_proxy": 0.4},
+        {"wind_speed": 25.0, "humidity": 15.0, "fuel_type": "chaparral",  "region": "mediterranean", "elevation": 600.0, "slope_proxy": 0.3},
+        {"wind_speed": 8.0,  "humidity": 50.0, "fuel_type": "forest",     "region": "amazon", "elevation": 150.0, "slope_proxy": 0.1},
+        {"wind_speed": 30.0, "humidity": 10.0, "fuel_type": "forest",     "region": "siberia", "elevation": 400.0, "slope_proxy": 0.2},
+        {"wind_speed": 20.0, "humidity": 20.0, "fuel_type": "grassland",  "region": "southeast_aus", "elevation": 300.0, "slope_proxy": 0.15},
     ]
 
     print("\n" + "=" * 70)

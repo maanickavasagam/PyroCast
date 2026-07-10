@@ -84,3 +84,38 @@ def get_elevation_grid(lat_min, lat_max, lon_min, lon_max, resolution: int = 15)
     except Exception as exc:  # noqa: BLE001 - never crash
         logger.error("Open Topo Data failed: %s - using flat zero grid.", exc)
         return np.zeros((resolution, resolution), dtype=float)
+
+
+def get_elevations_for_points(points: list[tuple[float, float]]) -> dict[tuple[float, float], float]:
+    """Batch elevation lookup for arbitrary scattered (lat, lon) points (not a
+    grid) — used to add a REAL elevation feature to ML training data.
+
+    Coordinates are rounded to 3 decimals (~110 m) and deduped before querying,
+    since training data often has many detections within the same cell.
+    Batches of up to 100 points per Open Topo Data request. On any batch
+    failure, those points are simply omitted from the result (caller should
+    treat a missing key as "unknown", not zero).
+    """
+    unique = sorted({(round(la, 3), round(lo, 3)) for la, lo in points})
+    out: dict[tuple[float, float], float] = {}
+
+    batch_size = 100
+    for i in range(0, len(unique), batch_size):
+        batch = unique[i : i + batch_size]
+        loc_str = "|".join(f"{la:.3f},{lo:.3f}" for la, lo in batch)
+        try:
+            resp = requests.get(OPENTOPO_URL, params={"locations": loc_str}, timeout=25)
+            resp.raise_for_status()
+            payload = resp.json()
+            if payload.get("status") != "OK":
+                raise ValueError(f"status={payload.get('status')}")
+            results = payload.get("results", [])
+            for (la, lo), r in zip(batch, results):
+                elev = r.get("elevation")
+                if elev is not None:
+                    out[(la, lo)] = float(elev)
+        except Exception as exc:  # noqa: BLE001 - skip this batch, never crash
+            logger.error("Open Topo Data batch elevation lookup failed: %s", exc)
+
+    logger.info("Elevation lookup: %d/%d unique points resolved.", len(out), len(unique))
+    return out

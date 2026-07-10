@@ -33,48 +33,68 @@ def _normalize_confidence(raw: str):
         return s
 
 
+def _fetch_window(days: int):
+    """Single FIRMS request for the last `days` days. Returns a list (possibly
+    empty) of parsed fire dicts, or raises on a hard request/parse failure."""
+    url = FIRMS_URL.format(key=FIRMS_MAP_KEY, days=days)
+    resp = requests.get(url, timeout=20)
+    resp.raise_for_status()
+    text = resp.text
+
+    # FIRMS occasionally returns an error string instead of CSV.
+    if not text or "," not in text.splitlines()[0]:
+        raise ValueError(f"unexpected payload: {text[:200]!r}")
+
+    reader = csv.DictReader(io.StringIO(text))
+    fires = []
+    for row in reader:
+        try:
+            lat = float(row["latitude"])
+            lon = float(row["longitude"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        # VIIRS brightness column is bright_ti4; MODIS uses brightness.
+        brightness = row.get("bright_ti4") or row.get("brightness") or ""
+        try:
+            brightness = float(brightness)
+        except (ValueError, TypeError):
+            brightness = None
+        fires.append(
+            {
+                "lat": lat,
+                "lon": lon,
+                "brightness": brightness,
+                "confidence": _normalize_confidence(row.get("confidence", "")),
+                "acq_date": row.get("acq_date", ""),
+            }
+        )
+    return fires
+
+
 def get_active_fires(days: int = 1):
     """Return a list of {lat, lon, brightness, confidence, acq_date} dicts.
+
+    NASA's most-recent ~24h window ("days=1") is occasionally empty simply
+    because that day's satellite passes haven't finished processing yet on
+    NASA's side (observed: VIIRS_SNPP/NOAA20 AND MODIS all return 0 rows for
+    days=1 while days=3 returns 100k+ rows at the same moment) — this is a
+    genuine upstream publishing lag, not a request failure. So if the
+    requested window comes back empty, we retry once with a 3-day window
+    before giving up, rather than immediately falling back to EONET/synthetic.
 
     On missing key or any request/parse failure, log and return []."""
     if not FIRMS_MAP_KEY:
         logger.warning("FIRMS_MAP_KEY not set - returning no active fires.")
         return []
 
-    url = FIRMS_URL.format(key=FIRMS_MAP_KEY, days=days)
     try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        text = resp.text
-
-        # FIRMS occasionally returns an error string instead of CSV.
-        if not text or "," not in text.splitlines()[0]:
-            logger.error("FIRMS returned unexpected payload: %s", text[:200])
-            return []
-
-        reader = csv.DictReader(io.StringIO(text))
-        fires = []
-        for row in reader:
-            try:
-                lat = float(row["latitude"])
-                lon = float(row["longitude"])
-            except (KeyError, ValueError, TypeError):
-                continue
-            # VIIRS brightness column is bright_ti4; MODIS uses brightness.
-            brightness = row.get("bright_ti4") or row.get("brightness") or ""
-            try:
-                brightness = float(brightness)
-            except (ValueError, TypeError):
-                brightness = None
-            fires.append(
-                {
-                    "lat": lat,
-                    "lon": lon,
-                    "brightness": brightness,
-                    "confidence": _normalize_confidence(row.get("confidence", "")),
-                    "acq_date": row.get("acq_date", ""),
-                }
+        fires = _fetch_window(days)
+        if not fires and days < 3:
+            logger.info(
+                "FIRMS returned 0 rows for days=%d (likely today's data not yet "
+                "published) — retrying with a 3-day window.", days,
             )
+            fires = _fetch_window(3)
         logger.info("FIRMS: parsed %d active-fire detections.", len(fires))
         return fires
     except Exception as exc:  # noqa: BLE001 - never crash on data fetch

@@ -42,14 +42,25 @@ export interface GlobalFiresResult {
   source: 'firms' | 'eonet';
 }
 
+/** User-selectable fire feed preference. 'auto' = backend's FIRMS→EONET fallback. */
+export type FireFeedPreference = 'auto' | 'firms' | 'eonet';
+
 /**
- * Fetch active fires from the backend. Resolves with the points and which
- * source they came from ('firms' primary, 'eonet' fallback). Throws if the
- * backend is unreachable or has no data, so the caller can drop to synthetic.
+ * Fetch active fires from the backend. `preference` selects the feed: 'auto'
+ * lets the backend prefer FIRMS and fall back to EONET; 'firms'/'eonet' pin to
+ * that source specifically and do NOT fall back to the other — an empty
+ * result throws so the caller can show a source-specific "unavailable" state
+ * instead of silently switching feeds under the user.
+ * Resolves with the points and which source they actually came from. Throws
+ * if the backend is unreachable or has no data, so the caller can drop to
+ * synthetic.
  */
-export async function fetchGlobalFires(signal?: AbortSignal): Promise<GlobalFiresResult> {
+export async function fetchGlobalFires(
+  preference: FireFeedPreference = 'auto',
+  signal?: AbortSignal
+): Promise<GlobalFiresResult> {
   // Guard against a slow/hung backend so the World View falls back promptly.
-  const res = await fetch(`${API_BASE}/api/global-fires`, {
+  const res = await fetch(`${API_BASE}/api/global-fires?source=${preference}`, {
     signal: signal ?? AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error(`backend /api/global-fires ${res.status}`);
@@ -260,4 +271,42 @@ export async function fetchSummary(
   const d = await res.json();
   if (!d.summary) throw new Error('backend returned no summary');
   return d.summary as string;
+}
+
+// ── Environmental data log ────────────────────────────────────────────────────
+
+export interface LogEntry {
+  timestamp: string;
+  inputs: {
+    lat: number;
+    lon: number;
+    wind_direction: number;
+    wind_speed: number;
+    fuel_type: string;
+    humidity: number;
+  };
+  outputs: {
+    threat_index?: { label: string; score: number };
+    burn_area_acres?: number[];
+    data_source?: string;
+    [k: string]: unknown;
+  };
+}
+
+/**
+ * Fetch the most recent timestamped environmental/simulation log entries from
+ * the backend's persistent JSONL log (newest last). Returns [] on any failure
+ * so the log panel can degrade quietly.
+ */
+export async function fetchLogs(limit = 40, signal?: AbortSignal): Promise<LogEntry[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/logs?limit=${limit}`, {
+      signal: signal ?? AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const d = await res.json();
+    return Array.isArray(d.events) ? (d.events as LogEntry[]) : [];
+  } catch {
+    return [];
+  }
 }

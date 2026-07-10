@@ -115,7 +115,8 @@ export function WorldMap({ fires, locations, selectedId, onSelect }: Props) {
       attributionControl: { compact: true },
       dragRotate: false,
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+    // No on-screen zoom buttons on the World map — scroll/pinch zoom is enabled
+    // by default, and this keeps the bottom-right corner free for the data log.
     mapRef.current = map;
     // Debug handle for inspecting projection/layer alignment in devtools.
     (window as unknown as Record<string, unknown>).__pyroWorldMap = map;

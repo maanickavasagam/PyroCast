@@ -67,6 +67,13 @@ export function RegionView({ location, onBack }: Props) {
     setWeatherLoading(true);
     setSpread(null);
     setFuel(location.fuel);
+    // Clear everything tied to the PREVIOUS location immediately — otherwise
+    // its evacuation route / AI summary stay on screen (pointing at the wrong
+    // place) until the new /api/simulate call resolves, which can take a while.
+    setEvacuationRoute(undefined);
+    setRawSimulation(undefined);
+    setSummary(undefined);
+    setSummaryError(undefined);
 
     fetchWeatherFromBackend(location.lat, location.lon)
       .catch((err) => {

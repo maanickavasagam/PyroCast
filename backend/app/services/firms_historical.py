@@ -26,9 +26,15 @@ logger = logging.getLogger("pyrocast.firms_historical")
 FIRMS_MAP_KEY = os.getenv("FIRMS_MAP_KEY", "")
 
 # FIRMS area CSV endpoint for archive data.
-# Format: /api/area/csv/{key}/{source}/{bbox}/{days_or_daterange}
+#
+# Real format (confirmed against the API): /api/area/csv/{key}/{source}/{bbox}/{day_range}/{start_date}
+#   day_range  — integer 1-10, number of days of data to return
+#   start_date — a SINGLE date (YYYY-MM-DD); the API returns `day_range` days
+#                of data starting FROM that date forward.
+# There is NO "start/end" date-range path segment — passing one (the previous
+# bug here) returns HTTP 400 on every request.
 FIRMS_AREA_URL = (
-    "https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/{bbox}/{date_range}"
+    "https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/{bbox}/{day_range}/{start_date}"
 )
 
 # ── Predefined wildfire-prone regions ────────────────────────────────────────
@@ -109,8 +115,10 @@ def fetch_historical_fires(
 ) -> list[dict]:
     """Fetch FIRMS archive detections for a bounding-box region over a date range.
 
-    The FIRMS API allows up to 10 days per request, so we chunk the range
-    accordingly. Returns a flat list of detection dicts.
+    The per-request day range is capped by the API key's tier — this key's
+    tier returned "Invalid day range. Expects [1..5]" for anything above 5, so
+    we chunk in 5-day windows (confirmed empirically; some keys may allow more).
+    Returns a flat list of detection dicts.
     """
     if not FIRMS_MAP_KEY:
         logger.warning("FIRMS_MAP_KEY not set — cannot fetch historical data.")
@@ -120,13 +128,15 @@ def fetch_historical_fires(
     chunk_start = start_date
 
     while chunk_start <= end_date:
-        chunk_end = min(chunk_start + timedelta(days=9), end_date)
-        date_range = f"{chunk_start.isoformat()}/{chunk_end.isoformat()}"
+        chunk_end = min(chunk_start + timedelta(days=4), end_date)
+        day_range = (chunk_end - chunk_start).days + 1  # 1-10, inclusive
         url = FIRMS_AREA_URL.format(
             key=FIRMS_MAP_KEY,
             bbox=region.bbox.replace(" ", ""),
-            date_range=date_range,
+            day_range=day_range,
+            start_date=chunk_start.isoformat(),
         )
+        label = f"{chunk_start.isoformat()}+{day_range}d"
         try:
             resp = requests.get(url, timeout=timeout)
             resp.raise_for_status()
@@ -134,11 +144,11 @@ def fetch_historical_fires(
             all_records.extend(records)
             logger.info(
                 "FIRMS historical: %s %s → %d detections",
-                region.name, date_range, len(records),
+                region.name, label, len(records),
             )
         except Exception as exc:
             safe = str(exc).replace(FIRMS_MAP_KEY, "***") if FIRMS_MAP_KEY else str(exc)
-            logger.error("FIRMS historical fetch failed (%s %s): %s", region.name, date_range, safe)
+            logger.error("FIRMS historical fetch failed (%s %s): %s", region.name, label, safe)
 
         chunk_start = chunk_end + timedelta(days=1)
 

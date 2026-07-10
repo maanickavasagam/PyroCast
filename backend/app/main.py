@@ -50,7 +50,7 @@ from app.models.calibration_apply import (  # noqa: E402
     get_model_confidence,
     get_prediction_uncertainty,
 )
-from app.services.event_log import log_simulation_event  # noqa: E402
+from app.services.event_log import log_simulation_event, read_recent_events  # noqa: E402
 from app.services.routing import get_evacuation_route  # noqa: E402
 from app.services.summarizer import summarize_incident  # noqa: E402
 
@@ -112,48 +112,87 @@ def root():
     return {"service": "PyroCast API", "status": "ok"}
 
 
-# Small in-memory cache for the global fire feed. Active-fire data changes on
-# the order of hours, and the upstream sources (esp. EONET) can be slow/flaky,
-# so caching keeps repeated page loads instant and rides over transient blips by
-# serving the last good result.
+# Small in-memory cache for the global fire feed, keyed per source so FIRMS and
+# EONET can each be fetched and cached independently — this is what lets the
+# frontend toggle between them instantly instead of only ever seeing whichever
+# one the automatic fallback picked. Active-fire data changes on the order of
+# hours, and the upstream sources (esp. EONET) can be slow/flaky, so caching
+# keeps repeated requests instant and rides over transient blips.
 import time  # noqa: E402
 
-_FIRES_CACHE: dict = {"at": 0.0, "payload": None}
+_FIRES_CACHE: dict[str, dict] = {
+    "firms": {"at": 0.0, "payload": None},
+    "eonet": {"at": 0.0, "payload": None},
+}
 _FIRES_TTL_S = 180
 
 
-@app.get("/api/global-fires")
-def global_fires(days: int = 1):
-    # Serve a fresh cached result if we have one.
+def _cached_or_fetch(key: str, fetch_fn, days: int) -> tuple[list, bool]:
+    """Return (fires, from_cache) for one specific source, using its own
+    cache slot. Falls back to a stale cache entry if the fresh fetch is empty."""
     now = time.time()
-    if _FIRES_CACHE["payload"] and (now - _FIRES_CACHE["at"]) < _FIRES_TTL_S:
-        return _FIRES_CACHE["payload"]
+    slot = _FIRES_CACHE[key]
+    if slot["payload"] is not None and (now - slot["at"]) < _FIRES_TTL_S:
+        return slot["payload"], True
 
-    # Prefer FIRMS (raw thermal detections); fall back to NASA EONET (curated
-    # open wildfire events) when FIRMS is unreachable — e.g. on networks that
-    # filter the *.modaps.eosdis.gov domain. `source` tells the caller which
-    # dataset the response came from.
-    fires = get_active_fires(days=days)
-    source = "firms"
-    if not fires:
-        fires = get_active_fires_eonet()
-        source = "eonet" if fires else "none"
-
+    fires = fetch_fn(days) if key == "firms" else fetch_fn()
     if fires:
-        payload = {"count": len(fires), "source": source, "fires": fires}
-        _FIRES_CACHE.update(at=now, payload=payload)
-        return payload
+        slot.update(at=now, payload=fires)
+        return fires, False
 
-    # Nothing live this time — serve a stale cache if we have one rather than
-    # forcing the client to synthetic.
-    if _FIRES_CACHE["payload"]:
-        return _FIRES_CACHE["payload"]
-    return {"count": 0, "source": "none", "fires": []}
+    # Nothing live this time — serve a stale cache if we have one.
+    if slot["payload"] is not None:
+        return slot["payload"], True
+    return [], False
+
+
+@app.get("/api/global-fires")
+def global_fires(days: int = 1, source: str = "auto"):
+    """Active fires.
+
+    `source` selects the feed explicitly:
+      - "firms" — NASA FIRMS raw thermal detections only
+      - "eonet" — NASA EONET curated open wildfire events only
+      - "auto"  — (default) prefer FIRMS, fall back to EONET if unreachable
+    Explicit "firms"/"eonet" never falls back to the other — an empty result
+    is returned as-is (with source reflecting what was actually returned) so
+    the frontend can show its own "unavailable" state rather than silently
+    switching feeds under the user.
+    """
+    source = source.lower().strip()
+
+    if source == "firms":
+        fires, _ = _cached_or_fetch("firms", get_active_fires, days)
+        return {"count": len(fires), "source": "firms" if fires else "none", "fires": fires}
+
+    if source == "eonet":
+        fires, _ = _cached_or_fetch("eonet", get_active_fires_eonet, days)
+        return {"count": len(fires), "source": "eonet" if fires else "none", "fires": fires}
+
+    # auto: prefer FIRMS, fall back to EONET.
+    fires, _ = _cached_or_fetch("firms", get_active_fires, days)
+    if fires:
+        return {"count": len(fires), "source": "firms", "fires": fires}
+
+    fires, _ = _cached_or_fetch("eonet", get_active_fires_eonet, days)
+    return {"count": len(fires), "source": "eonet" if fires else "none", "fires": fires}
 
 
 @app.get("/api/weather")
 def weather(lat: float, lon: float):
     return get_current_weather(lat, lon)
+
+
+@app.get("/api/logs")
+def logs(limit: int = 40):
+    """Recent timestamped environmental/simulation log entries (newest last).
+
+    Reads the persistent JSONL event log written on every /api/simulate call —
+    lets the frontend surface the 'log environmental data with timestamps'
+    requirement instead of it living only in a server-side file.
+    """
+    events = read_recent_events(limit=limit)
+    return {"count": len(events), "events": events}
 
 
 @app.post("/api/simulate")
@@ -181,6 +220,11 @@ def simulate(req: SimulateRequest):
 
     # 4. Run the CA spread from the grid center, scaled by the ML calibration
     #    multiplier (1.0 if the model is unavailable — never blocks the sim).
+    #    Elevation/slope come from the SAME grid already fetched above — real
+    #    values, not neutral defaults, for any model trained with them.
+    ignition_r, ignition_c = RESOLUTION // 2, RESOLUTION // 2
+    ignition_elevation = float(elevation_grid[ignition_r, ignition_c])
+    grid_slope_proxy = max(0.0, min(1.0, float(elevation_grid.std()) / 200.0))
     calibration = get_calibration_multiplier(
         wind_speed=req.wind_speed,
         humidity=humidity,
@@ -188,8 +232,10 @@ def simulate(req: SimulateRequest):
         region=_calibration_region(req.lat, req.lon),
         lat=req.lat,
         lon=req.lon,
+        elevation=ignition_elevation,
+        slope_proxy=grid_slope_proxy,
     )
-    ignition = (RESOLUTION // 2, RESOLUTION // 2)
+    ignition = (ignition_r, ignition_c)
     result = simulate_spread(
         elevation_grid=elevation_grid,
         vegetation_grid=veg_grid,
@@ -256,7 +302,7 @@ def simulate(req: SimulateRequest):
     threat_index = calculate_threat_index(req.wind_speed, humidity, fuel_load)
 
     # 5b. Real evacuation route (OSRM), None if unreachable — never fabricated.
-    evacuation_route = get_evacuation_route(req.lat, req.lon)
+    evacuation_route = get_evacuation_route(req.lat, req.lon, wind_direction=req.wind_direction)
 
     # 6. Convert grid snapshots to lat/lng heatmap frames.
     rows, cols = RESOLUTION, RESOLUTION

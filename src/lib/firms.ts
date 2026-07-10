@@ -1,5 +1,5 @@
 import type { FeedSource, FirePoint, WatchLocation } from '../types';
-import { fetchGlobalFires } from './api';
+import { fetchGlobalFires, type FireFeedPreference } from './api';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Active-fire feed orchestration.
@@ -17,14 +17,18 @@ import { fetchGlobalFires } from './api';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fetch active fires. Returns the points and the resolved feed source. Never
- * rejects — falls back to a synthetic dataset if the backend is unreachable.
+ * Fetch active fires. `preference` lets the user pin the feed to 'firms' or
+ * 'eonet' explicitly (via the World View toggle) instead of the default
+ * 'auto' (FIRMS preferred, EONET fallback). Returns the points and the
+ * resolved feed source. Never rejects — falls back to a synthetic dataset if
+ * the backend/selected source is unavailable.
  */
 export async function fetchActiveFires(
-  seeds: WatchLocation[]
+  seeds: WatchLocation[],
+  preference: FireFeedPreference = 'auto'
 ): Promise<{ points: FirePoint[]; source: FeedSource }> {
   try {
-    const { points, source } = await fetchGlobalFires();
+    const { points, source } = await fetchGlobalFires(preference);
     return { points, source };
   } catch (err) {
     console.warn('[fires] backend unavailable — using synthetic feed:', err);

@@ -24,6 +24,26 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+# Windows consoles default stdout to cp1252, which can't encode arrows/superscripts
+# etc. and crashes a print AFTER the (expensive) training/fetch work is done.
+# Force UTF-8 so no future print statement here can lose a training run.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+# Trust the OS certificate store so outbound HTTPS (FIRMS, Open Topo Data)
+# works behind a TLS-inspecting proxy. This script is run standalone
+# (`python -m app.models.train_calibration`), not through main.py, so it needs
+# its own injection rather than relying on main.py's.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:  # noqa: BLE001 - if unavailable, fall back to certifi
+    pass
+
 import numpy as np
 
 logger = logging.getLogger("pyrocast.train_calibration")
@@ -104,7 +124,10 @@ def _region_encode(region_name: str) -> int:
     return _MAP.get(region_name, 0)
 
 
-def build_features(records: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+def build_features(
+    records: list[dict],
+    elevations: dict[tuple[float, float], float] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Build (X, y) from FIRMS detection records.
 
     Features (per record):
@@ -119,6 +142,15 @@ def build_features(records: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         8  region_encoded — int label for region
         9  wind_proxy  — seasonal wind estimate
        10  humidity_proxy — seasonal humidity estimate
+       11  elevation    — REAL elevation in meters (Open Topo Data), or the
+                           batch's mean elevation if this point's lookup failed
+       12  slope_proxy  — this point's elevation deviation from its region's
+                           mean elevation, /1000 and clamped to [0, 1]. This is
+                           NOT a true terrain gradient (that needs neighbor
+                           sampling, which isn't affordable per-record at this
+                           volume) — it's a real-data-derived ruggedness proxy:
+                           points far from their region's typical elevation
+                           (ridgelines, canyons) score higher than flat plains.
 
     Target:
         A "spread multiplier" derived from brightness + FRP relative to a
@@ -132,6 +164,20 @@ def build_features(records: list[dict]) -> tuple[np.ndarray, np.ndarray]:
     brightnesses = [r["brightness"] for r in records if r.get("brightness") is not None]
     base_brightness = float(np.median(brightnesses)) if brightnesses else 330.0
 
+    # Per-region mean elevation, for the slope proxy and as a fallback when a
+    # specific point's elevation lookup failed.
+    elevations = elevations or {}
+    region_elevs: dict[str, list[float]] = {}
+    for rec in records:
+        key = (round(rec["lat"], 3), round(rec["lon"], 3))
+        elev = elevations.get(key)
+        if elev is not None:
+            region_elevs.setdefault(rec.get("region", "california"), []).append(elev)
+    region_mean_elev = {
+        region: float(np.mean(vals)) for region, vals in region_elevs.items() if vals
+    }
+    overall_mean_elev = float(np.mean([e for vals in region_elevs.values() for e in vals])) if region_elevs else 500.0
+
     for rec in records:
         brightness = rec.get("brightness")
         if brightness is None or brightness < 200:
@@ -143,6 +189,11 @@ def build_features(records: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         proxy = _seasonal_proxy(rec["lat"], month)
 
         month_rad = 2.0 * math.pi * month / 12.0
+
+        key = (round(rec["lat"], 3), round(rec["lon"], 3))
+        region_mean = region_mean_elev.get(region, overall_mean_elev)
+        elevation = elevations.get(key, region_mean)
+        slope_proxy = max(0.0, min(1.0, abs(elevation - region_mean) / 1000.0))
 
         features = [
             rec["lat"],
@@ -156,6 +207,8 @@ def build_features(records: list[dict]) -> tuple[np.ndarray, np.ndarray]:
             _region_encode(region),
             proxy["wind_speed"],
             proxy["humidity"],
+            elevation,
+            slope_proxy,
         ]
         X_list.append(features)
 
@@ -241,10 +294,11 @@ def train_model(records: list[dict] | None = None, use_live: bool = True):
       - Falls back to synthetic data if FIRMS is unavailable
     """
     import joblib
-    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
     from sklearn.model_selection import cross_val_score
 
     # ── 1. Get training data ─────────────────────────────────────────────
+    used_live = False
     if records is None:
         if use_live:
             try:
@@ -256,6 +310,8 @@ def train_model(records: list[dict] | None = None, use_live: bool = True):
                 end = date.today() - timedelta(days=1)
                 start = end - timedelta(days=29)
                 records = fetch_all_regions(start_date=start, end_date=end)
+                if records:
+                    used_live = True
             except Exception as exc:
                 logger.warning("Live FIRMS fetch failed (%s) — using synthetic data.", exc)
                 records = None
@@ -264,39 +320,63 @@ def train_model(records: list[dict] | None = None, use_live: bool = True):
             logger.info("Using synthetic training data.")
             records = _generate_synthetic_records()
 
-    # ── 2. Feature engineering ───────────────────────────────────────────
-    X, y = build_features(records)
+    # ── 2. Real elevation lookup (only worth the network cost for real FIRMS
+    #    detections — synthetic records have no real place to look up). ─────
+    elevations: dict[tuple[float, float], float] = {}
+    if used_live:
+        from app.services.elevation import get_elevations_for_points
+
+        points = [(r["lat"], r["lon"]) for r in records]
+        elevations = get_elevations_for_points(points)
+
+    # ── 3. Feature engineering ───────────────────────────────────────────
+    X, y = build_features(records, elevations=elevations)
     if len(X) < 50:
         logger.error("Too few usable records (%d) — need at least 50. Aborting.", len(X))
         return None
 
-    logger.info("Training set: %d samples, %d features", X.shape[0], X.shape[1])
+    logger.info("Training set: %d samples, %d features (live_data=%s)", X.shape[0], X.shape[1], used_live)
 
-    # ── 3. Train ─────────────────────────────────────────────────────────
-    model = HistGradientBoostingRegressor(
-        max_iter=200,
-        max_depth=6,
-        learning_rate=0.05,
-        min_samples_leaf=20,
-        random_state=42,
-    )
-    model.fit(X, y)
+    # ── 4. Train + cross-validate BOTH model types, keep the better one ──
+    candidates = {
+        "HistGradientBoostingRegressor": HistGradientBoostingRegressor(
+            max_iter=200, max_depth=6, learning_rate=0.05, min_samples_leaf=20, random_state=42,
+        ),
+        "RandomForestRegressor": RandomForestRegressor(
+            n_estimators=300, max_depth=10, min_samples_leaf=10, random_state=42, n_jobs=-1,
+        ),
+    }
 
-    # ── 4. Evaluate (5-fold cross-validation) ────────────────────────────
-    r2_scores = cross_val_score(model, X, y, cv=5, scoring="r2")
-    mae_scores = cross_val_score(model, X, y, cv=5, scoring="neg_mean_absolute_error")
+    results = {}
+    for name, candidate in candidates.items():
+        r2_scores = cross_val_score(candidate, X, y, cv=5, scoring="r2")
+        mae_scores = cross_val_score(candidate, X, y, cv=5, scoring="neg_mean_absolute_error")
+        results[name] = {
+            "r2": float(np.mean(r2_scores)),
+            "r2_folds": r2_scores,
+            "mae": float(-np.mean(mae_scores)),
+            "mae_folds": -mae_scores,
+        }
 
-    r2_mean = float(np.mean(r2_scores))
-    mae_mean = float(-np.mean(mae_scores))
+    best_name = max(results, key=lambda n: results[n]["r2"])
+    model = candidates[best_name]
+    model.fit(X, y)  # final fit on all data for the saved artifact
+
+    r2_mean = results[best_name]["r2"]
+    mae_mean = results[best_name]["mae"]
 
     print("\n" + "=" * 60)
     print("  PyroCast ML Calibration — Training Results")
     print("=" * 60)
     print(f"  Samples:          {X.shape[0]:,}")
     print(f"  Features:         {X.shape[1]}")
-    print(f"  Model:            HistGradientBoostingRegressor")
-    print(f"  R² (5-fold CV):   {r2_mean:.4f}  (per fold: {', '.join(f'{s:.3f}' for s in r2_scores)})")
-    print(f"  MAE (5-fold CV):  {mae_mean:.4f}  (per fold: {', '.join(f'{-s:.3f}' for s in mae_scores)})")
+    print(f"  Training data:    {'LIVE FIRMS' if used_live else 'synthetic'}")
+    print("-" * 60)
+    for name, r in results.items():
+        marker = "  <- selected" if name == best_name else ""
+        print(f"  {name}{marker}")
+        print(f"    R² (5-fold CV):  {r['r2']:.4f}  (per fold: {', '.join(f'{s:.3f}' for s in r['r2_folds'])})")
+        print(f"    MAE (5-fold CV): {r['mae']:.4f}  (per fold: {', '.join(f'{s:.3f}' for s in r['mae_folds'])})")
     print("=" * 60)
 
     # ── 5. Save ──────────────────────────────────────────────────────────
@@ -304,18 +384,21 @@ def train_model(records: list[dict] | None = None, use_live: bool = True):
         "lat", "lon", "brightness", "confidence",
         "month_sin", "month_cos", "fuel_encoded", "fuel_load",
         "region_encoded", "wind_proxy", "humidity_proxy",
+        "elevation", "slope_proxy",
     ]
     artifact = {
         "model": model,
+        "model_name": best_name,
         "feature_names": feature_names,
         "fuel_encode_map": _FUEL_ENCODE,
         "region_encode_map": {"california": 0, "southeast_aus": 1, "mediterranean": 2, "amazon": 3, "siberia": 4},
         "r2": r2_mean,
         "mae": mae_mean,
         "n_samples": int(X.shape[0]),
+        "used_live_data": used_live,
     }
     joblib.dump(artifact, MODEL_PATH)
-    print(f"\n  Model saved -> {MODEL_PATH}")
+    print(f"\n  Model saved -> {MODEL_PATH}  ({best_name})")
     print(f"  Artifact keys: {list(artifact.keys())}\n")
 
     return artifact
